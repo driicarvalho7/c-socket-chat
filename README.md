@@ -64,7 +64,8 @@ Antes de iniciar, você precisa ter o **GCC** (GNU Compiler Collection) instalad
 
    No terminal, execute o servidor com o seguinte comando:
     ```bash
-    ./bin/server
+    cd bin/
+    ./server
     ```
 
    O servidor será iniciado na porta **8080** (ou na porta definida em `globals.h`).
@@ -74,7 +75,8 @@ Antes de iniciar, você precisa ter o **GCC** (GNU Compiler Collection) instalad
    Em outro terminal, execute o cliente para se conectar ao servidor:
 
     ```bash
-    ./bin/client
+    cd bin/
+    ./client
     ```
 
    Você será solicitado a inserir seu nome de usuário e escolher um canal de chat.
