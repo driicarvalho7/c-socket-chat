@@ -1,13 +1,46 @@
+# Diretórios
+SRC_DIR = src
+INCLUDE_DIR = include
+BUILD_DIR = build
+BIN_DIR = bin
+LOG_DIR = logs
+
+# Compilador e flags
 CC = gcc
-CFLAGS = -pthread
+CFLAGS = -Wall -pthread -I$(INCLUDE_DIR)
 
-all: server client
+# Alvos
+SERVER_OBJ = $(BUILD_DIR)/server.o $(BUILD_DIR)/my_socket.o $(BUILD_DIR)/logger.o
+CLIENT_OBJ = $(BUILD_DIR)/client.o $(BUILD_DIR)/my_socket.o
 
-server: server.c my_socket.c
-	$(CC) $(CFLAGS) server.c my_socket.c -o server
+# Execução padrão (compila tudo)
+all: directories server client
 
-client: client.c my_socket.c
-	$(CC) $(CFLAGS) client.c my_socket.c -o client
+# Diretórios necessários
+directories:
+	mkdir -p $(BUILD_DIR) $(BIN_DIR) $(LOG_DIR)
 
+# Compila o servidor
+server: $(SERVER_OBJ)
+	$(CC) $(CFLAGS) -o $(BIN_DIR)/server $(SERVER_OBJ)
+
+# Compila o cliente
+client: $(CLIENT_OBJ)
+	$(CC) $(CFLAGS) -o $(BIN_DIR)/client $(CLIENT_OBJ)
+
+# Regras de compilação
+$(BUILD_DIR)/server.o: $(SRC_DIR)/server.c $(INCLUDE_DIR)/my_socket.h $(INCLUDE_DIR)/logger.h
+	$(CC) $(CFLAGS) -c $(SRC_DIR)/server.c -o $@
+
+$(BUILD_DIR)/client.o: $(SRC_DIR)/client.c $(INCLUDE_DIR)/my_socket.h
+	$(CC) $(CFLAGS) -c $(SRC_DIR)/client.c -o $@
+
+$(BUILD_DIR)/my_socket.o: $(SRC_DIR)/my_socket.c $(INCLUDE_DIR)/my_socket.h
+	$(CC) $(CFLAGS) -c $(SRC_DIR)/my_socket.c -o $@
+
+$(BUILD_DIR)/logger.o: $(SRC_DIR)/logger.c $(INCLUDE_DIR)/logger.h
+	$(CC) $(CFLAGS) -c $(SRC_DIR)/logger.c -o $@
+
+# Limpeza dos arquivos de build
 clean:
-	rm -f server client
+	rm -rf $(BUILD_DIR) $(BIN_DIR)
