@@ -5,58 +5,22 @@
 #include <pthread.h>
 #include "my_socket.h"
 #include "logger.h" 
-
-#define PORT 8883
-#define MAX_CLIENTS 10
-#define BUFFER_SIZE 1024
-#define MAX_MESSAGES 100
-#define NUM_CHANNELS 5
-
-#define ANSI_COLOR_BLUE "\x1b[34m"
-#define ANSI_COLOR_RESET "\x1b[0m"
-#define ANSI_COLOR_USER1 "\x1b[32m"
-#define ANSI_COLOR_USER2 "\x1b[33m"
-#define ANSI_COLOR_USER3 "\x1b[35m"
-#define ANSI_COLOR_USER4 "\x1b[36m"
-#define ANSI_COLOR_USER5 "\x1b[31m"
+#include "globals.h"
 
 FILE *log_file;
-int clients[MAX_CLIENTS];
-int client_channels[MAX_CLIENTS];
 char client_usernames[MAX_CLIENTS][50];
-int client_count = 0;
 char message_history[NUM_CHANNELS][MAX_MESSAGES][BUFFER_SIZE];
 int message_count[NUM_CHANNELS] = {0};
-pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t messages_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-const char *get_user_color(int client_index) {
-    switch (client_index % 5) {
-        case 0: return ANSI_COLOR_USER1;
-        case 1: return ANSI_COLOR_USER2;
-        case 2: return ANSI_COLOR_USER3;
-        case 3: return ANSI_COLOR_USER4;
-        case 4: return ANSI_COLOR_USER5;
-        default: return ANSI_COLOR_RESET;
-    }
-}
-
-// Função para enviar uma mensagem para todos os clientes do mesmo canal, exceto o remetente
-void broadcast_message(char *message, int sender_fd, int channel, int sender_index) {
-    pthread_mutex_lock(&clients_mutex);
+// Função para verificar se o nome de usuário já existe
+int is_username_taken(const char *username) {
     for (int i = 0; i < client_count; ++i) {
-        if (clients[i] != sender_fd && client_channels[i] == channel) {
-            char colored_message[BUFFER_SIZE + 50];
-            const char *color = get_user_color(sender_index);
-            snprintf(colored_message, sizeof(colored_message), "%s%s%s", color, message, ANSI_COLOR_RESET);
-            if (send(clients[i], colored_message, strlen(colored_message), 0) < 0) {
-                perror("Erro ao enviar mensagem");
-                write_log(log_file, "Erro ao enviar mensagem.");
-                continue;
-            }
+        if (strcmp(client_usernames[i], username) == 0) {
+            return 1;
         }
     }
-    pthread_mutex_unlock(&clients_mutex);
+    return 0;
 }
 
 // Função para tratar cada cliente conectado
@@ -67,29 +31,33 @@ void *handle_client(void *arg) {
     
     // Receber nome de usuário do cliente
     char username[50];
-    if ((bytes_read = recv(client_socket, username, 50, 0)) <= 0) {
-        perror("Erro ao receber nome do usuário");
-        write_log(log_file, "Erro ao receber nome do usuário.");
-        close(client_socket);
-        return NULL;
-    }
-    username[bytes_read] = '\0';
+    while (1) {
+        if ((bytes_read = recv(client_socket, username, 50, 0)) <= 0) {
+            perror("Erro ao receber nome do usuário");
+            write_log(log_file, "Erro ao receber nome do usuário.");
+            close(client_socket);
+            return NULL;
+        }
+        username[bytes_read] = '\0';
 
-    pthread_mutex_lock(&clients_mutex);
-    for (int i = 0; i < client_count; ++i) {
-        if (strcmp(client_usernames[i], username) == 0) {
-            snprintf(username + strlen(username), sizeof(username) - strlen(username), "_%d", client_count);
+        pthread_mutex_lock(&clients_mutex);
+        if (is_username_taken(username)) {
+            // Se o nome de usuário já estiver em uso, enviar mensagem de erro
+            send(client_socket, "username_in_use", strlen("username_in_use"), 0);
+            pthread_mutex_unlock(&clients_mutex);
+        } else {
+            // Nome de usuário único, pode prosseguir
+            strcpy(client_usernames[client_count], username);
+            pthread_mutex_unlock(&clients_mutex);
             break;
         }
     }
-    pthread_mutex_unlock(&clients_mutex);
 
     printf("%s se conectou.\n", username);
     char log_msg[BUFFER_SIZE + 200];
 
-    // Receber escolha de canal (declarar 'channel' antes do primeiro uso)
-    int channel;  // Declarar a variável antes de usá-la
-    
+    // Receber escolha de canal
+    int channel; 
     if ((bytes_read = recv(client_socket, buffer, BUFFER_SIZE, 0)) <= 0) {
         perror("Erro ao receber canal");
         write_log(log_file, "Erro ao receber canal.");
@@ -97,7 +65,7 @@ void *handle_client(void *arg) {
         return NULL;
     }
     
-    channel = atoi(buffer) - 1;  // Inicializar 'channel' aqui
+    channel = atoi(buffer) - 1;
     
     if (channel < 0 || channel >= NUM_CHANNELS) {
         printf("Canal inválido escolhido por %s.\n", username);
@@ -114,12 +82,11 @@ void *handle_client(void *arg) {
     pthread_mutex_lock(&clients_mutex);
     client_channels[client_count] = channel;
     clients[client_count] = client_socket;
-    strncpy(client_usernames[client_count], username, sizeof(client_usernames[client_count]) - 1);
-    client_usernames[client_count][sizeof(client_usernames[client_count]) - 1] = '\0';
     int client_index = client_count;
     client_count++;
     pthread_mutex_unlock(&clients_mutex);
 
+    // Enviar histórico de mensagens do canal atual
     pthread_mutex_lock(&messages_mutex);
     for (int i = 0; i < message_count[channel]; ++i) {
         if (send(client_socket, message_history[channel][i], strlen(message_history[channel][i]), 0) < 0) {
@@ -132,7 +99,36 @@ void *handle_client(void *arg) {
     // Loop para receber mensagens do cliente
     while ((bytes_read = recv(client_socket, buffer, BUFFER_SIZE, 0)) > 0) {
         buffer[bytes_read] = '\0';
-        printf("Mensagem recebida de %s no canal %d: %s", username, channel + 1, buffer);
+
+        // Verificar se o cliente deseja mudar de canal
+        if (strstr(buffer, "change_channel") == buffer) {
+            // Cliente deseja mudar de canal
+            int new_channel = atoi(buffer + 15) - 1;  // Extrai o novo canal do comando
+            if (new_channel < 0 || new_channel >= NUM_CHANNELS) {
+                printf("Canal inválido escolhido por %s.\n", username);
+                continue;
+            }
+            printf("\n%s mudou para o canal %d.", username, new_channel + 1);
+
+            // Atualizar o canal do cliente
+            pthread_mutex_lock(&clients_mutex);
+            client_channels[client_index] = new_channel;
+            pthread_mutex_unlock(&clients_mutex);
+
+            // Enviar o histórico do novo canal
+            pthread_mutex_lock(&messages_mutex);
+            for (int i = 0; i < message_count[new_channel]; ++i) {
+                if (send(client_socket, message_history[new_channel][i], strlen(message_history[new_channel][i]), 0) < 0) {
+                    perror("Erro ao enviar histórico de mensagens");
+                    write_log(log_file, "Erro ao enviar histórico de mensagens.");
+                }
+            }
+            pthread_mutex_unlock(&messages_mutex);
+
+            continue;
+        }
+
+        printf("\nMensagem recebida de %s no canal %d: %s", username, channel + 1, buffer);
 
         snprintf(log_msg, sizeof(log_msg), "Mensagem recebida de %s no canal %d: %s", username, channel + 1, buffer);
         write_log(log_file, log_msg);
@@ -150,7 +146,7 @@ void *handle_client(void *arg) {
         }
         pthread_mutex_unlock(&messages_mutex);
 
-        broadcast_message(message_with_username, client_socket, channel, client_index);
+        broadcast_message(message_with_username, client_socket, client_channels[client_index], client_index);
     }
 
     // Se ocorrer um erro ou o cliente se desconectar
